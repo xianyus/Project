@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>專業協作看板 - 雲端完美捲動版</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    
+    <link href="https://cdn.quilljs.com/1.3.6/quill.snow.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/tippy.js@6/dist/tippy.css">
+    <link rel="stylesheet" href="https://unpkg.com/tippy.js@6/themes/material.css">
+
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+
+    <style>
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .modal-overlay { background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); }
+        .color-dot { width: 24px; height: 24px; border-radius: 6px; cursor: pointer; transition: all 0.2s; border: 2px solid transparent; }
+        .color-dot.active { border-color: #6366f1; transform: scale(1.2); }
+        .drag-placeholder { background-color: rgba(99, 102, 241, 0.05); border: 2px dashed #6366f1; border-radius: 0.75rem; margin-bottom: 1rem; }
+        .list-placeholder { background-color: rgba(99, 102, 241, 0.1); border: 2px dashed #6366f1; border-radius: 1rem; width: 20rem; height: 80vh; flex-shrink: 0; }
+        .dragging { opacity: 0.4; }
+        .list-dragging { opacity: 0.5; }
+        .tab-btn.active { border-bottom: 2px solid #6366f1; color: #6366f1; }
+        
+        /* 看板容器與游標 */
+        #board-wrapper { cursor: grab; user-select: none; overflow-x: auto; }
+        #board-wrapper.active { cursor: grabbing; }
+        .editing-title #board-wrapper { cursor: default; }
+        
+        .list-container, .card-item, button, input, select { cursor: default; }
+
+        /* [修正] 列表高度動態計算，確保底部可見 */
+        .list-container {
+            max-height: calc(100vh - 140px);
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* [新增] Trello 風格捲軸 */
+        .card-list::-webkit-scrollbar { width: 8px; }
+        .card-list::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 4px; }
+        .card-list::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        .card-list::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+        #editor-container { height: 250px; background: white; border-bottom-left-radius: 0.75rem; border-bottom-right-radius: 0.75rem; }
+        .ql-toolbar { border-top-left-radius: 0.75rem; border-top-right-radius: 0.75rem; background: #f8fafc; }
+        .add-list-wrapper { min-width: 20rem; width: 20rem; flex-shrink: 0; background-color: rgba(255, 255, 255, 0.5); border-radius: 1rem; padding: 1rem; cursor: pointer; }
+        .add-list-wrapper:hover { background-color: rgba(255, 255, 255, 0.8); }
+        .add-list-form { background-color: #f1f5f9; border-radius: 1rem; padding: 0.75rem; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
+        
+        /* 連線狀態燈 */
+        #sync-status { position: fixed; bottom: 10px; right: 10px; font-size: 10px; padding: 4px 8px; border-radius: 4px; background: #eee; color: #666; z-index: 9999; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        #sync-status.online { background: #d1fae5; color: #065f46; }
+        #sync-status.offline { background: #fee2e2; color: #991b1b; }
+    </style>
+</head>
+<body class="bg-slate-100 min-h-screen text-slate-800 overflow-hidden flex flex-col">
+
+    <div id="sync-status">連線中...</div>
+
+    <nav class="bg-white border-b p-4 flex justify-between items-center sticky top-0 z-50 shadow-sm h-[72px]">
+        <div class="flex items-center gap-3">
+            <div class="bg-indigo-600 w-10 h-10 flex items-center justify-center rounded-none text-white shadow-lg">
+                <i class="fa-solid fa-square-poll-vertical text-lg"></i>
+            </div>
+            <h1 class="text-xl font-bold tracking-tight text-slate-700">專案協作管理 <span class="text-xs bg-indigo-100 text-indigo-600 px-2 py-0.5 rounded ml-2">Cloud</span></h1>
+        </div>
+        <div class="flex items-center gap-3">
+            <button onclick="toggleArchiveModal()" class="bg-slate-100 hover:bg-slate-200 text-slate-500 p-2.5 rounded-lg border border-slate-200" title="查看封存卡片">
+                <i class="fa-solid fa-box-archive text-lg"></i>
+            </button>
+            <button onclick="toggleCalendarModal()" class="bg-slate-100 hover:bg-slate-200 text-slate-500 p-2.5 rounded-lg border border-slate-200" title="開啟日曆追蹤">
+                <i class="fa-solid fa-calendar-days text-lg"></i>
+            </button>
+            <button onclick="openSettingsPortal()" class="bg-slate-100 hover:bg-slate-200 text-slate-500 p-2.5 rounded-lg border border-slate-200" title="設定">
+                <i class="fa-solid fa-gear text-lg"></i>
+            </button>
+        </div>
+    </nav>
+
+    <div id="board-wrapper" class="flex-1 overflow-x-auto no-scrollbar py-8">
+        <div id="board" class="flex flex-row gap-6 px-6 items-start min-w-max h-full" ondragover="handleBoardDragOver(event)"></div>
+    </div>
+
+    <div id="cardModal" class="hidden fixed inset-0 z-50 modal-overlay flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-4xl h-[90vh] flex flex-col overflow-hidden">
+            <div id="modalCover" class="h-40 w-full bg-slate-200 hidden bg-cover bg-center"></div>
+            <div id="modalBar" class="h-2 w-full"></div>
+            <div class="p-6 flex-1 overflow-y-auto"> <div class="flex justify-between items-start mb-4">
+                    <div class="flex-1 px-1">
+                        <input id="editTitle" type="text" class="text-2xl font-black w-full border-none focus:ring-0 rounded p-1 mb-1" placeholder="任務標題">
+                        <p class="text-xs text-slate-400">位於列表：<span id="listTitleName" class="underline"></span></p>
+                    </div>
+                    <button onclick="closeModal()" class="text-slate-300 hover:text-slate-600 ml-4"><i class="fa-solid fa-circle-xmark text-2xl"></i></button>
+                </div>
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-6">
+                    <div class="md:col-span-3 space-y-6">
+                        <div><div class="flex items-center gap-2 mb-2 text-slate-600"><i class="fa-solid fa-align-left text-sm"></i><label class="font-bold uppercase text-xs">描述與附件</label></div><div id="editor-container"></div></div>
+                        <div><div class="flex items-center gap-2 mb-2 text-slate-600"><i class="fa-solid fa-comments text-sm"></i><label class="font-bold uppercase text-xs">活動留言</label></div><div class="flex gap-3 mb-4"><div class="w-8 h-8 rounded bg-slate-100 flex items-center justify-center text-slate-500 font-bold text-xs">ME</div><div class="flex-1"><textarea id="newComment" rows="2" class="w-full border rounded-lg p-2 text-sm bg-white outline-none focus:ring-2 focus:ring-indigo-500" placeholder="撰寫評論..."></textarea><button onclick="addComment()" class="mt-1 bg-indigo-600 text-white px-3 py-1 rounded text-xs font-bold">儲存</button></div></div><div id="commentList" class="space-y-3"></div></div>
+                    </div>
+                    <div class="space-y-4">
+                        <div class="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-3">
+                            <div><label class="text-[10px] font-bold text-slate-400 uppercase block mb-1">負責人</label><select id="editOwner" class="w-full border rounded-lg px-2 py-1 text-sm"></select></div>
+                            <div><label class="text-[10px] font-bold text-slate-400 uppercase block mb-1">標籤</label><select id="editLabel" class="w-full border rounded-lg px-2 py-1 text-sm font-bold text-indigo-600"></select></div>
+                            <div><label class="text-[10px] font-bold text-slate-400 uppercase block mb-1">截止日期</label><input id="editDate" type="date" class="w-full border rounded-lg px-2 py-1 text-sm outline-none"></div>
+                        </div>
+                        <div class="space-y-2 px-1">
+                            <button onclick="saveCardChanges()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-2 rounded-lg font-bold text-sm flex items-center justify-center gap-2 transition-all shadow-md"><i class="fa-solid fa-save"></i> 儲存變更</button>
+                            <button onclick="deleteCurrentCard()" class="w-full bg-red-50 text-red-500 hover:bg-red-500 hover:text-white py-2 rounded-lg font-bold text-[11px] uppercase transition-all flex items-center justify-center gap-2"><i class="fa-solid fa-trash-can"></i> 刪除此張卡片</button>
+                        </div>
+                        <div><label class="text-[10px] font-bold text-slate-400 uppercase block mb-2 px-1">快速選色</label><div id="colorPicker" class="grid grid-cols-5 gap-2 px-1"></div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="calendarModal" class="hidden fixed inset-0 z-[70] modal-overlay flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-5xl overflow-hidden">
+            <div class="p-6 border-b flex justify-between items-center bg-slate-50">
+                <h3 class="font-bold text-slate-700"><i class="fa-solid fa-calendar-check mr-2"></i>專案日期追蹤</h3>
+                <button onclick="toggleCalendarModal()" class="text-slate-400 hover:text-slate-600"><i class="fa-solid fa-xmark text-xl"></i></button>
+            </div>
+            <div class="p-6"><div id="calendar"></div></div>
+        </div>
+    </div>
+
+    <div id="settingModal" class="hidden fixed inset-0 z-[60] modal-overlay flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+            <div class="p-6 border-b flex justify-between items-center bg-slate-50">
+                <h3 class="font-bold text-slate-700">看板偏好設定</h3>
+                <button onclick="document.getElementById('settingModal').classList.add('hidden')" class="text-slate-400 hover:text-slate-600"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div class="flex border-b text-sm font-bold text-slate-400">
+                <button id="tab-data" onclick="switchTab('data')" class="tab-btn flex-1 py-3 active">資料管理</button>
+                <button id="tab-font" onclick="switchTab('font')" class="tab-btn flex-1 py-3">視覺樣式</button>
+            </div>
+            <div class="p-6 max-h-[60vh] overflow-y-auto">
+                <div id="panel-data" class="space-y-6">
+                    <section class="bg-indigo-50 p-4 rounded-xl border border-indigo-100">
+                        <label class="text-[10px] font-bold text-indigo-500 uppercase mb-2 block">資料備份與轉移</label>
+                        <div class="grid grid-cols-2 gap-3">
+                            <button onclick="exportData()" class="bg-white border border-indigo-200 text-indigo-600 py-2 rounded-lg text-sm font-bold hover:bg-indigo-600 hover:text-white transition-colors"><i class="fa-solid fa-download mr-1"></i> 匯出檔案</button>
+                            <button onclick="document.getElementById('importFile').click()" class="bg-white border border-indigo-200 text-indigo-600 py-2 rounded-lg text-sm font-bold hover:bg-indigo-600 hover:text-white transition-colors"><i class="fa-solid fa-upload mr-1"></i> 匯入檔案</button>
+                            <input type="file" id="importFile" class="hidden" accept=".json" onchange="importData(this)">
+                        </div>
+                    </section>
+                    <section><label class="text-[10px] font-bold text-slate-400 uppercase mb-2 block">負責人清單</label><div id="ownerSettings" class="space-y-2 mb-3"></div><div class="flex gap-2"><input id="newOwnerInput" type="text" class="flex-1 border rounded-lg px-3 py-2 text-sm" placeholder="新負責人姓名"><button onclick="addOption('owners')" class="bg-indigo-600 text-white px-3 rounded-lg text-sm">新增</button></div></section>
+                    <section><label class="text-[10px] font-bold text-slate-400 uppercase mb-2 block">標籤清單</label><div id="labelSettings" class="space-y-2 mb-3"></div><div class="flex gap-2"><input id="newLabelInput" type="text" class="flex-1 border rounded-lg px-3 py-2 text-sm" placeholder="新標籤名稱"><button onclick="addOption('labels')" class="bg-indigo-600 text-white px-3 rounded-lg text-sm">新增</button></div></section>
+                </div>
+                <div id="panel-font" class="hidden space-y-6">
+                    <section><label class="text-[10px] font-bold text-slate-400 uppercase mb-2 block">看板標題字體 (px)</label><input id="input-list-font" type="number" onchange="updateFontSize('list', this.value)" class="w-full border rounded-lg px-3 py-2 text-sm"></section>
+                    <section><label class="text-[10px] font-bold text-slate-400 uppercase mb-2 block">卡片內容字體 (px)</label><input id="input-card-font" type="number" onchange="updateFontSize('card', this.value)" class="w-full border rounded-lg px-3 py-2 text-sm"></section>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.quilljs.com/1.3.6/quill.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.js"></script>
+    <script src="https://unpkg.com/@popperjs/core@2"></script>
+    <script src="https://unpkg.com/tippy.js@6"></script>
+    <script src="plugin.js"></script>
+    <script src="calendar-plugin.js"></script>
+    <script src="archive-plugin.js"></script>
+
+    <script>
+        // ==========================================
+        //  Firebase 雲端同步核心邏輯
+        // ==========================================
+        const firebaseConfig = {
+            apiKey: "AIzaSyB1CgICZRV1uSZsgohWw3EjwuxECaeYGRU",
+            authDomain: "project-adab1.firebaseapp.com",
+            projectId: "project-adab1",
+            storageBucket: "project-adab1.firebasestorage.app",
+            messagingSenderId: "359317748801",
+            appId: "1:359317748801:web:1faec8a66316d7f4fc9ac0",
+            measurementId: "G-21DR3Y5JP2"
+        };
+
+        let db;
+        let isFirebaseReady = false;
+
+        try {
+            if (firebaseConfig.apiKey) {
+                firebase.initializeApp(firebaseConfig);
+                db = firebase.firestore();
+                isFirebaseReady = true;
+                updateStatus('online');
+            } else {
+                updateStatus('local');
+            }
+        } catch (e) {
+            console.error("Firebase 初始化失敗", e);
+            updateStatus('error');
+        }
+
+        function updateStatus(status) {
+            const el = document.getElementById('sync-status');
+            if (status === 'online') { el.innerText = '● 雲端連線成功'; el.className = 'online'; }
+            else if (status === 'syncing') { el.innerText = '↻ 資料同步中...'; el.className = 'online'; }
+            else if (status === 'error') { el.innerText = '● 連線失敗 (僅本地)'; el.className = 'offline'; }
+            else { el.innerText = '● 本地模式'; el.className = 'offline'; }
+        }
+
+        let lists = [];
+        let currentEdit = null;
+        let quill = null;
+        let isAddingList = false;
+
+        // 讀取邏輯
+        function loadData() {
+            const local = localStorage.getItem('trello_v6');
+            if (local) { lists = JSON.parse(local); renderBoard(); } 
+            else { lists = [{ id: 'l1', title: '待處理', cards: [] }]; renderBoard(); }
+
+            if (isFirebaseReady) {
+                db.collection("boards").doc("main_board").onSnapshot((doc) => {
+                    if (doc.exists) {
+                        const cloudData = doc.data();
+                        lists = cloudData.lists || [];
+                        localStorage.setItem('trello_v6', JSON.stringify(lists));
+                        if (cloudData.plugin_config) localStorage.setItem('plugin_config', JSON.stringify(cloudData.plugin_config));
+                        if (cloudData.trello_archives) localStorage.setItem('trello_archives', JSON.stringify(cloudData.trello_archives));
+                        renderBoard();
+                        updateStatus('online');
+                    } else {
+                        saveAll();
+                    }
+                }, (err) => {
+                    console.error("雲端讀取錯誤:", err);
+                    updateStatus('error');
+                });
+            }
+        }
+
+        // 儲存邏輯
+        function saveAll() {
+            localStorage.setItem('trello_v6', JSON.stringify(lists));
+            renderBoard();
+
+            if (isFirebaseReady) {
+                updateStatus('syncing');
+                db.collection("boards").doc("main_board").set({
+                    lists: lists,
+                    updatedAt: new Date().toISOString(),
+                    plugin_config: JSON.parse(localStorage.getItem('plugin_config')) || {},
+                    trello_archives: JSON.parse(localStorage.getItem('trello_archives')) || []
+                }, { merge: true })
+                .then(() => setTimeout(() => updateStatus('online'), 500))
+                .catch(err => {
+                    console.error("雲端失敗:", err);
+                    updateStatus('error');
+                });
+            }
+        }
+
+        // --- 核心：智慧捲動邏輯 ---
+        const wrapper = document.getElementById('board-wrapper');
+        let isDown = false, startX, scrollLeft;
+
+        // 1. 智慧滾輪
+        wrapper.addEventListener('wheel', (e) => {
+            const scrollableList = e.target.closest('.card-list');
+            if (scrollableList) {
+                // 如果列表內容超過高度，優先讓列表垂直捲動
+                const isScrollable = scrollableList.scrollHeight > scrollableList.clientHeight;
+                if (isScrollable) return; 
+            }
+            // 否則水平捲動看板
+            if (e.deltaY !== 0) {
+                e.preventDefault();
+                wrapper.scrollLeft += e.deltaY;
+            }
+        });
+
+        // 2. 抓取拖曳
+        wrapper.addEventListener('mousedown', (e) => {
+            if (e.target.closest('.list-container') || e.target.closest('.card-item') || e.target.closest('.add-list-form') || ['BUTTON', 'INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
+            isDown = true; wrapper.classList.add('active'); startX = e.pageX - wrapper.offsetLeft; scrollLeft = wrapper.scrollLeft;
+        });
+        wrapper.addEventListener('mouseleave', () => { isDown = false; wrapper.classList.remove('active'); });
+        wrapper.addEventListener('mouseup', () => { isDown = false; wrapper.classList.remove('active'); });
+        wrapper.addEventListener('mousemove', (e) => {
+            if (!isDown) return;
+            e.preventDefault();
+            const x = e.pageX - wrapper.offsetLeft;
+            const walk = (x - startX) * 2;
+            wrapper.scrollLeft = scrollLeft - walk;
+        });
+
+        // --- Render Board (含滑軌修正) ---
+        function renderBoard() {
+            const board = document.getElementById('board');
+            if (!board) return;
+            board.innerHTML = '';
+            const config = (typeof getPluginConfig === 'function') ? getPluginConfig() : {listFontSize: 11, cardFontSize: 13};
+            
+            lists.forEach(list => {
+                const el = document.createElement('div');
+                el.className = "list-container bg-slate-200/50 rounded-2xl w-80 p-4 flex-shrink-0 flex flex-col border shadow-inner";
+                el.draggable = true;
+                el.dataset.listId = list.id;
+                el.ondragstart = (e) => { 
+                    if (document.body.classList.contains('editing-title')) { e.preventDefault(); return; }
+                    if (e.target.classList.contains('list-container')) { draggedListId = list.id; e.target.classList.add('list-dragging'); } 
+                };
+                el.ondragend = (e) => { e.target.classList.remove('list-dragging'); document.querySelectorAll('.list-placeholder, .drag-placeholder').forEach(p => p.remove()); };
+                el.ondragover = (e) => handleCardDragOver(e, list.id);
+                el.ondrop = (e) => dropCard(e, list.id);
+                
+                el.innerHTML = `
+                    <div class="flex justify-between items-center mb-4 px-1 cursor-move">
+                        <h2 onclick="enableListEdit(this, '${list.id}')" class="font-black text-slate-500 uppercase hover:text-indigo-600 transition-colors cursor-pointer w-full" style="font-size: ${config.listFontSize}px">${list.title}</h2>
+                        <button onclick="deleteList('${list.id}')" class="text-slate-300 hover:text-red-400 ml-2"><i class="fa-solid fa-trash-can text-xs"></i></button>
+                    </div>
+                    <div class="card-list space-y-4 overflow-y-auto flex-1 pr-1">
+                        ${list.cards.map(card => `
+                            <div onclick="openModal('${list.id}', '${card.id}')" draggable="true" ondragstart="startCardDrag(event, '${card.id}', '${list.id}')"
+                                 class="card-item bg-white rounded-xl shadow-sm border border-slate-100 cursor-pointer hover:shadow-xl transition-all overflow-hidden">
+                                <div class="h-2 w-full" style="background-color: ${card.color}"></div>
+                                <div class="p-4">
+                                    <span class="bg-indigo-50 text-indigo-500 text-[9px] font-black px-2 py-0.5 rounded border mb-2 inline-block">${card.label}</span>
+                                    <p class="text-slate-700 font-bold mb-4 leading-tight" style="font-size: ${config.cardFontSize}px">${card.text}</p>
+                                    <div class="flex items-center justify-between text-[10px] text-slate-400 font-bold">
+                                        <span class="bg-green-600 text-white px-2 py-0.5 rounded-full flex items-center gap-1"><i class="fa-regular fa-clock"></i> ${card.date}</span>
+                                        <div class="flex items-center gap-2">
+                                            <span>@${card.owner}</span>
+                                            <button onclick="event.stopPropagation(); if(window.archiveCard) archiveCard('${list.id}', '${card.id}');" class="text-slate-400 hover:text-blue-500 p-1 transition-colors">
+                                                <i class="fa-solid fa-box-archive text-[11px]"></i>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                    <button onclick="addNewCard('${list.id}')" class="mt-4 text-slate-400 font-bold py-2 border-2 border-dashed border-slate-300 rounded-xl hover:bg-white text-[11px]">+ 新增卡片</button>
+                `;
+                board.appendChild(el);
+            });
+
+            const addListDiv = document.createElement('div');
+            addListDiv.className = "add-list-wrapper";
+            if (!isAddingList) {
+                addListDiv.innerHTML = `<button onclick="showAddListForm()" class="w-full text-left text-slate-500 font-bold hover:text-slate-700 flex items-center gap-2"><i class="fa-solid fa-plus"></i> 新增其他列表</button>`;
+            } else {
+                addListDiv.innerHTML = `
+                    <div class="add-list-form">
+                        <input type="text" id="newListTitle" class="w-full border border-indigo-500 rounded p-2 mb-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300" placeholder="輸入列表標題..." autofocus>
+                        <div class="flex items-center gap-2">
+                            <button onclick="confirmAddList()" class="bg-indigo-600 text-white px-4 py-1.5 rounded text-sm font-bold hover:bg-indigo-700">新增列表</button>
+                            <button onclick="hideAddListForm()" class="text-slate-500 hover:text-slate-800"><i class="fa-solid fa-xmark text-lg"></i></button>
+                        </div>
+                    </div>
+                `;
+            }
+            board.appendChild(addListDiv);
+            if(isAddingList) setTimeout(() => document.getElementById('newListTitle')?.focus(), 0);
+        }
+
+        // --- 匯入匯出 ---
+        function exportData() {
+            const data = { lists: lists, archives: JSON.parse(localStorage.getItem('trello_archives')), config: JSON.parse(localStorage.getItem('plugin_config')) };
+            const blob = new Blob([JSON.stringify(data, null, 2)], {type: "application/json"});
+            const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `看板備份_${new Date().toISOString().slice(0,10)}.json`; a.click();
+        }
+        function importData(input) {
+            const file = input.files[0]; if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const data = JSON.parse(e.target.result);
+                    if (data.lists) lists = data.lists;
+                    if (data.archives) localStorage.setItem('trello_archives', JSON.stringify(data.archives));
+                    if (data.config) localStorage.setItem('plugin_config', JSON.stringify(data.config));
+                    saveAll(); alert("匯入成功！"); location.reload();
+                } catch (err) { alert("格式錯誤"); }
+            }; reader.readAsText(file);
+        }
+
+        // --- Quill 編輯器 ---
+        function initQuill() {
+            if (quill) return;
+            quill = new Quill('#editor-container', {
+                theme: 'snow',
+                placeholder: '輸入詳細描述...',
+                modules: { toolbar: [ [{ 'header': [1, 2, 3, false] }], ['bold', 'italic', 'underline', 'strike'], [{ 'color': [] }, { 'background': [] }], [{ 'list': 'ordered'}, { 'list': 'bullet' }], ['image', 'link'], ['clean'] ] }
+            });
+        }
+
+        // --- 輔助功能 ---
+        function showAddListForm() { isAddingList = true; renderBoard(); }
+        function hideAddListForm() { isAddingList = false; renderBoard(); }
+        function confirmAddList() {
+            const title = document.getElementById('newListTitle').value.trim();
+            if (title) { lists.push({id: 'l' + Date.now(), title: title, cards: []}); saveAll(); isAddingList = false; }
+        }
+        document.addEventListener('keydown', function(e) { if (isAddingList && e.key === 'Enter' && document.activeElement.id === 'newListTitle') confirmAddList(); });
+
+        function enableListEdit(element, listId) {
+            const currentTitle = element.innerText;
+            const input = document.createElement('input');
+            input.type = 'text'; input.value = currentTitle;
+            input.className = "font-black text-slate-700 uppercase w-full bg-white border border-indigo-500 rounded px-1 py-0.5 outline-none";
+            input.style.fontSize = (typeof getPluginConfig === 'function' ? getPluginConfig().listFontSize : 11) + 'px';
+            document.body.classList.add('editing-title');
+            element.replaceWith(input); input.focus(); input.select();
+            const save = () => {
+                const newTitle = input.value.trim();
+                if (newTitle) { const list = lists.find(l => l.id === listId); if (list) list.title = newTitle; saveAll(); } else { renderBoard(); }
+                document.body.classList.remove('editing-title');
+            };
+            input.addEventListener('blur', save);
+            input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); });
+        }
+
+        function openModal(lid, cid) {
+            const list = lists.find(l => l.id === lid);
+            const card = list.cards.find(c => c.id === cid);
+            if(!card) return;
+            currentEdit = { lid, cid, color: card.color };
+            initQuill();
+            document.getElementById('listTitleName').innerText = list.title;
+            document.getElementById('editTitle').value = card.text;
+            quill.root.innerHTML = card.desc || '';
+            document.getElementById('editDate').value = card.date;
+            document.getElementById('modalBar').style.backgroundColor = card.color;
+            const cfg = (typeof getPluginConfig === 'function') ? getPluginConfig() : {owners: [], labels: []};
+            document.getElementById('editOwner').innerHTML = cfg.owners.map(o => `<option value="${o}" ${card.owner === o ? 'selected' : ''}>${o}</option>`).join('');
+            document.getElementById('editLabel').innerHTML = cfg.labels.map(l => `<option value="${l}" ${card.label === l ? 'selected' : ''}>${l}</option>`).join('');
+            const cols = ['#facc15', '#f87171', '#fb923c', '#4ade80', '#2dd4bf', '#38bdf8', '#818cf8', '#c084fc', '#f472b6', '#94a3b8'];
+            document.getElementById('colorPicker').innerHTML = cols.map(c => `<div class="color-dot ${c === card.color ? 'active' : ''}" style="background-color: ${c}" onclick="setModalColor('${c}', event)"></div>`).join('');
+            renderComments(card.comments || []);
+            document.getElementById('cardModal').classList.remove('hidden');
+        }
+
+        function saveCardChanges() {
+            const card = lists.find(l => l.id === currentEdit.lid).cards.find(c => c.id === currentEdit.cid);
+            card.text = document.getElementById('editTitle').value;
+            card.desc = quill.root.innerHTML;
+            card.owner = document.getElementById('editOwner').value;
+            card.label = document.getElementById('editLabel').value;
+            card.date = document.getElementById('editDate').value;
+            card.color = currentEdit.color;
+            saveAll(); closeModal();
+        }
+
+        function deleteCurrentCard() { if(confirm("確定要刪除這張卡片嗎？")) { const list = lists.find(l => l.id === currentEdit.lid); list.cards = list.cards.filter(c => c.id !== currentEdit.cid); saveAll(); closeModal(); } }
+        function addComment() { const input = document.getElementById('newComment'); if (!input.value.trim()) return; const card = lists.find(l => l.id === currentEdit.lid).cards.find(c => c.id === currentEdit.cid); if (!card.comments) card.comments = []; card.comments.unshift({ id: Date.now(), text: input.value, date: new Date().toLocaleString() }); input.value = ''; renderComments(card.comments); saveAll(); }
+        function renderComments(comments) { const list = document.getElementById('commentList'); list.innerHTML = comments.map(c => `<div class="bg-slate-50 p-2 rounded border text-xs"><div class="font-bold mb-1">User <span class="font-normal text-slate-400 text-[9px]">${c.date}</span></div>${c.text}</div>`).join(''); }
+        function closeModal() { document.getElementById('cardModal').classList.add('hidden'); }
+        function addNewCard(lid) { 
+            const today = new Date().toISOString().split('T')[0];
+            const cfg = (typeof getPluginConfig === 'function') ? getPluginConfig() : {owners: ['未指定'], labels: ['待處理']};
+            lists.find(l => l.id === lid).cards.push({ id: 'c'+Date.now(), text: '新任務', date: today, color: '#facc15', label: cfg.labels[0], owner: cfg.owners[0] }); 
+            saveAll(); 
+        }
+        function openSettingsPortal() { if(typeof initPluginUI === 'function') initPluginUI(); document.getElementById('settingModal').classList.remove('hidden'); }
+        function addList() { showAddListForm(); }
+        function deleteList(id) { if(confirm("確定刪除？")){lists = lists.filter(l=>l.id!==id); saveAll();} }
+        function setModalColor(c, e) { currentEdit.color = c; document.getElementById('modalBar').style.backgroundColor = c; document.querySelectorAll('.color-dot').forEach(d => d.classList.remove('active')); e.target.classList.add('active'); }
+        
+        let draggedListId = null;
+        function handleBoardDragOver(e) { if (draggedListId === null) return; e.preventDefault(); const board = document.getElementById('board'); const after = getDragAfterList(board, e.clientX); let ph = document.querySelector('.list-placeholder') || document.createElement('div'); ph.className = 'list-placeholder'; if (after == null) { board.insertBefore(ph, board.lastElementChild); } else { board.insertBefore(ph, after); } }
+        function getDragAfterList(container, x) { const drs = [...container.querySelectorAll('.list-container:not(.list-dragging)')]; return drs.reduce((c, child) => { const box = child.getBoundingClientRect(); const offset = x - box.left - box.width / 2; if (offset < 0 && offset > c.offset) return { offset, element: child }; else return c; }, { offset: Number.NEGATIVE_INFINITY }).element; }
+        document.getElementById('board').ondrop = (e) => { if (draggedListId === null) return; const ph = document.querySelector('.list-placeholder'); if (!ph) return; const ni = Array.from(document.getElementById('board').children).indexOf(ph); const oi = lists.findIndex(l => l.id === draggedListId); const [item] = lists.splice(oi, 1); lists.splice(ni > oi ? ni - 1 : ni, 0, item); draggedListId = null; saveAll(); };
+        function startCardDrag(e, cid, lid) { e.stopPropagation(); draggedCard = { cid, lid }; e.target.classList.add('dragging'); }
+        function handleCardDragOver(e, lid) { if (draggedCard === null) return; e.preventDefault(); e.stopPropagation(); const cl = e.currentTarget.querySelector('.card-list'); const after = getDragAfterCard(cl, e.clientY); let ph = document.querySelector('.drag-placeholder') || document.createElement('div'); ph.className = 'drag-placeholder'; ph.style.height = '100px'; if (after == null) cl.appendChild(ph); else cl.insertBefore(ph, after); }
+        function getDragAfterCard(container, y) { const drs = [...container.querySelectorAll('.card-item:not(.dragging)')]; return drs.reduce((c, child) => { const box = child.getBoundingClientRect(); const offset = y - box.top - box.height / 2; if (offset < 0 && offset > c.offset) return { offset, element: child }; else return c; }, { offset: Number.NEGATIVE_INFINITY }).element; }
+        function dropCard(e, lid) { if (draggedCard === null) return; e.preventDefault(); e.stopPropagation(); const fl = lists.find(l => l.id === draggedCard.lid), tl = lists.find(l => l.id === lid); const idx = fl.cards.findIndex(c => c.id === draggedCard.cid); const [item] = fl.cards.splice(idx, 1); const ph = e.currentTarget.querySelector('.drag-placeholder'); const pi = ph ? Array.from(e.currentTarget.querySelector('.card-list').children).indexOf(ph) : -1; if (pi === -1) tl.cards.push(item); else tl.cards.splice(pi, 0, item); draggedCard = null; saveAll(); }
+
+        window.onload = () => { loadData(); };
+    </script>
+</body>
+</html>
