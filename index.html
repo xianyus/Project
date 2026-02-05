@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>專業協作看板 - 雙導航旗艦版</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    
+    <link href="https://cdn.quilljs.com/1.3.6/quill.snow.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/tippy.js@6/dist/tippy.css">
+    <link rel="stylesheet" href="https://unpkg.com/tippy.js@6/themes/material.css">
+
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+
+    <style>
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .modal-overlay { background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); }
+        .color-dot { width: 24px; height: 24px; border-radius: 6px; cursor: pointer; transition: all 0.2s; border: 2px solid transparent; }
+        .color-dot.active { border-color: #6366f1; transform: scale(1.2); }
+        .drag-placeholder { background-color: rgba(99, 102, 241, 0.05); border: 2px dashed #6366f1; border-radius: 0.75rem; margin-bottom: 1rem; }
+        .list-placeholder { background-color: rgba(99, 102, 241, 0.1); border: 2px dashed #6366f1; border-radius: 1rem; width: 20rem; height: 80vh; flex-shrink: 0; }
+        .dragging { opacity: 0.4; }
+        .list-dragging { opacity: 0.5; }
+        .tab-btn.active { border-bottom: 2px solid #6366f1; color: #6366f1; }
+        
+        #board-wrapper { cursor: grab; user-select: none; overflow-x: auto; }
+        #board-wrapper.active { cursor: grabbing; }
+        .editing-title #board-wrapper { cursor: default; }
+        
+        .list-container, .card-item, button, input, select { cursor: default; }
+        .list-container { max-height: calc(100vh - 140px); display: flex; flex-direction: column; }
+
+        .card-list::-webkit-scrollbar { width: 8px; }
+        .card-list::-webkit-scrollbar-track { background: #f1f5f9; border-radius: 4px; }
+        .card-list::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+        .card-list::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+        .card-item.card-done { opacity: 0.6; filter: grayscale(100%); background-color: #f9fafb; }
+        .check-btn:hover { transform: scale(1.2); }
+
+        /* 色條互動樣式 */
+        .card-color-bar { height: 10px; width: 100%; transition: height 0.2s ease-out; position: relative; z-index: 10; }
+        .card-color-bar:hover { height: 42px; z-index: 30; }
+        .card-color-bar .toolbar-btns { display: none; opacity: 0; transition: opacity 0.2s; }
+        .card-color-bar:hover .toolbar-btns { display: flex; opacity: 1; }
+
+        #editor-container { height: 200px; background: white; border-bottom-left-radius: 0.75rem; border-bottom-right-radius: 0.75rem; }
+        .ql-toolbar { border-top-left-radius: 0.75rem; border-top-right-radius: 0.75rem; background: #f8fafc; }
+        
+        .add-list-wrapper { min-width: 20rem; width: 20rem; flex-shrink: 0; background-color: rgba(255, 255, 255, 0.5); border-radius: 1rem; padding: 1rem; cursor: pointer; }
+        .add-list-wrapper:hover { background-color: rgba(255, 255, 255, 0.8); }
+        .add-list-form { background-color: #f1f5f9; border-radius: 1rem; padding: 0.75rem; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); }
+        
+        #sync-status { position: fixed; bottom: 10px; right: 10px; font-size: 10px; padding: 4px 8px; border-radius: 4px; background: #eee; color: #666; z-index: 9999; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        #sync-status.online { background: #d1fae5; color: #065f46; }
+        #sync-status.offline { background: #fee2e2; color: #991b1b; }
+
+        /* Dashboard & Board Tiles */
+        #dashboardPage { background-color: #f8fafc; position: absolute; inset: 0; z-index: 40; overflow-y: auto; display: flex; flex-direction: column; }
+        .workspace-section { margin-bottom: 2.5rem; }
+        .board-tile { height: 100px; transition: all 0.2s; cursor: pointer; position: relative; overflow: hidden; }
+        .board-tile:hover { transform: translateY(-4px); box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); }
+        .board-tile-overlay { background: linear-gradient(to bottom, rgba(0,0,0,0) 0%, rgba(0,0,0,0.4) 100%); }
+        .board-actions { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; z-index: 20; opacity: 0; transition: opacity 0.2s; }
+        .board-tile:hover .board-actions { opacity: 1; }
+        .action-btn { width: 24px; height: 24px; background: rgba(255, 255, 255, 0.9); border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #475569; cursor: pointer; transition: all 0.2s; }
+        .action-btn:hover { background: white; color: #000; transform: scale(1.1); }
+        .action-btn.delete:hover { color: #ef4444; }
+
+        /* [新增] 側邊欄樣式 (恢復功能) */
+        #sidebar { width: 260px; background-color: #f1f5f9; border-right: 1px solid #e2e8f0; display: flex; flex-direction: column; transition: width 0.3s; height: 100vh; position: fixed; left: 0; top: 0; z-index: 50; }
+        #sidebar.collapsed { width: 0; overflow: hidden; border: none; }
+        #mainContent { margin-left: 260px; transition: margin-left 0.3s; width: calc(100% - 260px); position: relative; height: 100vh; }
+        #mainContent.expanded { margin-left: 0; width: 100%; }
+        
+        .sidebar-item { padding: 10px 12px; margin: 4px 8px; border-radius: 6px; cursor: pointer; color: #475569; display: flex; align-items: center; justify-content: space-between; font-size: 14px; font-weight: 600; transition: background 0.2s; }
+        .sidebar-item:hover { background-color: #e2e8f0; color: #1e293b; }
+        .sidebar-item.active { background-color: #e0e7ff; color: #4338ca; }
+        .sidebar-actions { display: flex; gap: 2px; opacity: 0; transition: opacity 0.2s; }
+        .sidebar-item:hover .sidebar-actions { opacity: 1; }
+        .sidebar-btn { padding: 4px; border-radius: 4px; color: #94a3b8; font-size: 12px; }
+        .sidebar-btn:hover { background: rgba(0,0,0,0.1); color: #475569; }
+        .sidebar-btn.del:hover { color: #ef4444; }
+
+        /* 深色模式修正 */
+        body.dark-mode { background-color: #020617 !important; color: #e2e8f0 !important; }
+        body.dark-mode nav, body.dark-mode #dashboardPage, body.dark-mode #sidebar { background-color: #020617 !important; border-color: #1e293b !important; }
+        body.dark-mode #mainApp { background-color: #020617 !important; }
+        body.dark-mode .bg-slate-50 { background-color: #0f172a !important; border-color: #1e293b !important; }
+        body.dark-mode .bg-slate-100:not(button) { background-color: #0f172a !important; color: #e2e8f0 !important; border-color: #1e293b !important; }
+        body.dark-mode .sidebar-item:hover { background-color: #1e293b; color: #fff; }
+        body.dark-mode .sidebar-item.active { background-color: #1e1b4b; color: #818cf8; }
+        body.dark-mode .text-slate-700 { color: #f1f5f9 !important; }
+        body.dark-mode .text-slate-600 { color: #cbd5e1 !important; }
+        body.dark-mode .text-slate-500 { color: #94a3b8 !important; }
+        body.dark-mode .text-slate-400 { color: #64748b !important; }
+        body.dark-mode .list-container { background-color: #0f172a !important; border-color: #1e293b !important; box-shadow: inset 0 2px 4px 0 rgba(0, 0, 0, 0.3) !important; }
+        body.dark-mode .card-item { background-color: #1e293b !important; border-color: #334155 !important; color: #fff !important; }
+        body.dark-mode .card-item.card-done { background-color: #0f172a !important; opacity: 0.5; }
+        body.dark-mode .bg-white { background-color: #1e293b !important; color: #fff !important; border-color: #334155 !important; }
+        body.dark-mode button.bg-slate-100, body.dark-mode .board-tile.bg-slate-200 { background-color: #1e293b !important; color: #94a3b8 !important; border-color: #334155 !important; }
+        body.dark-mode button.bg-slate-100:hover, body.dark-mode .board-tile.bg-slate-200:hover { background-color: #334155 !important; color: #fff !important; }
+        body.dark-mode input, body.dark-mode textarea, body.dark-mode select, body.dark-mode #editor-container { background-color: #0f172a !important; border-color: #334155 !important; color: #fff !important; }
+        body.dark-mode .ql-toolbar { background-color: #1e293b !important; border-color: #334155 !important; }
+        body.dark-mode .ql-stroke { stroke: #cbd5e1 !important; }
+        body.dark-mode .ql-picker { color: #cbd5e1 !important; }
+        body.dark-mode ::-webkit-scrollbar-track { background: #0f172a; }
+        body.dark-mode ::-webkit-scrollbar-thumb { background: #334155; border: 1px solid #0f172a; }
+        body.dark-mode ::-webkit-scrollbar-thumb:hover { background: #475569; }
+    </style>
+</head>
+<body class="bg-slate-100 min-h-screen text-slate-800 overflow-hidden flex">
+
+    <aside id="sidebar">
+        <div class="p-4 border-b border-slate-200 flex justify-between items-center h-[72px]">
+            <div class="flex items-center gap-2 font-bold text-slate-700">
+                <div class="w-8 h-8 bg-indigo-600 rounded text-white flex items-center justify-center shadow">W</div>
+                <span>工作區</span>
+            </div>
+            <div class="flex gap-1">
+                <button onclick="openCreateWorkspaceModal()" class="text-slate-400 hover:text-indigo-600 p-1 rounded hover:bg-slate-200 transition-colors" title="新增工作區"><i class="fa-solid fa-gear"></i></button>
+                <button onclick="toggleSidebar()" class="text-slate-400 hover:text-slate-600 p-1 rounded hover:bg-slate-200 transition-colors"><i class="fa-solid fa-angles-left"></i></button>
+            </div>
+        </div>
+        <div class="flex-1 overflow-y-auto p-2 no-scrollbar">
+            <div class="px-3 py-2 text-xs font-bold text-slate-400 uppercase mt-2">工作區列表</div>
+            <div id="workspaceList" class="space-y-1"></div>
+        </div>
+    </aside>
+
+    <main id="mainContent" class="flex-1 flex flex-col h-screen relative">
+        
+        <div id="dashboardPage" class="absolute inset-0 flex flex-col bg-slate-50 z-40">
+            <nav class="bg-white border-b px-8 py-4 flex justify-between items-center h-[72px] sticky top-0 z-50 shadow-sm">
+                <div class="flex items-center gap-3">
+                    <button onclick="toggleSidebar()" class="text-slate-400 hover:text-slate-600 mr-2 md:hidden"><i class="fa-solid fa-bars"></i></button>
+                    <div class="bg-indigo-600 w-10 h-10 flex items-center justify-center rounded text-white shadow-lg"><i class="fa-solid fa-layer-group text-lg"></i></div>
+                    <h1 class="text-xl font-bold tracking-tight text-slate-700">工作區總覽</h1>
+                </div>
+                <div><button onclick="openCreateWorkspaceModal()" class="bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-lg text-sm font-bold shadow transition-colors flex items-center gap-2"><i class="fa-solid fa-plus"></i> 建立新工作區</button></div>
+            </nav>
+            <div class="p-8 max-w-7xl mx-auto w-full flex-1"><div id="allWorkspacesContainer"></div></div>
+        </div>
+
+        <div id="mainApp" class="hidden flex-col h-full bg-slate-100 absolute inset-0 z-30">
+            <div id="sync-status">連線中...</div>
+            <nav id="boardNav" class="bg-white border-b p-4 flex justify-between items-center sticky top-0 z-50 shadow-sm h-[72px]">
+                <div class="flex items-center gap-3">
+                    <button onclick="toggleSidebar()" class="text-slate-400 hover:text-slate-600 mr-2"><i class="fa-solid fa-bars"></i></button>
+                    <button onclick="backToDashboard()" class="bg-slate-100 hover:bg-slate-200 text-slate-600 p-2 rounded-lg" title="回到工作區大廳"><i class="fa-solid fa-house"></i></button>
+                    <div class="flex flex-col"><h1 id="appTitle" class="text-xl font-bold tracking-tight text-slate-700 leading-none">載入中...</h1><span id="appBreadcrumb" class="text-[10px] text-slate-400 mt-1">工作區 > 看板</span></div>
+                    <span class="text-xs bg-indigo-100 text-indigo-600 px-2 py-0.5 rounded ml-2">Cloud</span>
+                </div>
+                <div class="flex items-center gap-3" id="navRightTools">
+                    <button onclick="toggleArchiveModal()" class="bg-slate-100 hover:bg-slate-200 text-slate-500 p-2.5 rounded-lg border border-slate-200"><i class="fa-solid fa-box-archive text-lg"></i></button>
+                    <button onclick="toggleCalendarModal()" class="bg-slate-100 hover:bg-slate-200 text-slate-500 p-2.5 rounded-lg border border-slate-200"><i class="fa-solid fa-calendar-days text-lg"></i></button>
+                    <button onclick="openSettingsPortal()" class="bg-slate-100 hover:bg-slate-200 text-slate-500 p-2.5 rounded-lg border border-slate-200"><i class="fa-solid fa-gear text-lg"></i></button>
+                </div>
+            </nav>
+            <div id="board-wrapper" class="flex-1 overflow-x-auto no-scrollbar py-8"><div id="board" class="flex flex-row gap-6 px-6 items-start min-w-max h-full" ondragover="handleBoardDragOver(event)"></div></div>
+        </div>
+    </main>
+
+    <div id="createWorkspaceModal" class="hidden fixed inset-0 z-[1100] modal-overlay flex items-center justify-center p-4"><div class="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden p-6"><h3 class="text-lg font-bold mb-4">建立新的工作區</h3><input id="newWorkspaceName" type="text" class="w-full border rounded p-2 mb-3 text-sm" placeholder="工作區名稱 (例: 設計部)"><div class="flex justify-end gap-2 mt-4"><button onclick="document.getElementById('createWorkspaceModal').classList.add('hidden')" class="px-4 py-2 text-slate-500 text-sm font-bold hover:bg-slate-100 rounded">取消</button><button onclick="createNewWorkspace()" class="px-4 py-2 bg-indigo-600 text-white text-sm font-bold rounded hover:bg-indigo-700">建立</button></div></div></div>
+    <div id="createBoardModal" class="hidden fixed inset-0 z-[1100] modal-overlay flex items-center justify-center p-4"><div class="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden p-6"><h3 class="text-lg font-bold mb-4">建立新的看板</h3><p class="text-xs text-slate-400 mb-2">將新增至：<span id="targetWsName" class="font-bold text-indigo-600"></span></p><input id="newBoardName" type="text" class="w-full border rounded p-2 mb-3 text-sm" placeholder="看板名稱 (例: 專案 A)"><input id="newBoardPass" type="password" class="w-full border rounded p-2 mb-3 text-sm" placeholder="密碼 (選填)"><div class="flex justify-end gap-2 mt-4"><button onclick="document.getElementById('createBoardModal').classList.add('hidden')" class="px-4 py-2 text-slate-500 text-sm font-bold hover:bg-slate-100 rounded">取消</button><button onclick="createNewBoard()" class="px-4 py-2 bg-indigo-600 text-white text-sm font-bold rounded hover:bg-indigo-700">建立</button></div></div></div>
+    <div id="editBoardModal" class="hidden fixed inset-0 z-[1100] modal-overlay flex items-center justify-center p-4"><div class="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden p-6"><h3 class="text-lg font-bold mb-4">編輯看板設定</h3><label class="text-[11px] font-bold text-slate-400 uppercase block mb-1">看板名稱</label><input id="editBoardNameInput" type="text" class="w-full border rounded p-2 mb-3 text-sm" placeholder="輸入名稱"><label class="text-[11px] font-bold text-slate-400 uppercase block mb-1">存取密碼</label><input id="editBoardPassInput" type="text" class="w-full border rounded p-2 mb-1 text-sm" placeholder="留空則移除密碼"><p class="text-[10px] text-slate-400 mb-4">若要移除鎖定，請將密碼欄位清空。</p><div class="flex justify-end gap-2 mt-4"><button onclick="document.getElementById('editBoardModal').classList.add('hidden')" class="px-4 py-2 text-slate-500 text-sm font-bold hover:bg-slate-100 rounded">取消</button><button onclick="confirmEditBoard()" class="px-4 py-2 bg-indigo-600 text-white text-sm font-bold rounded hover:bg-indigo-700">儲存變更</button></div></div></div>
+    <div id="unlockBoardModal" class="hidden fixed inset-0 z-[1100] modal-overlay flex items-center justify-center p-4"><div class="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden p-6 text-center"><div class="w-12 h-12 bg-red-100 text-red-500 rounded-full flex items-center justify-center mx-auto mb-4"><i class="fa-solid fa-lock text-xl"></i></div><h3 class="text-lg font-bold mb-2">看板已上鎖</h3><input id="unlockPass" type="password" class="w-full border rounded p-2 mb-3 text-sm text-center" placeholder="輸入密碼"><button onclick="attemptUnlock()" class="w-full px-4 py-2 bg-indigo-600 text-white text-sm font-bold rounded hover:bg-indigo-700">解鎖進入</button><button onclick="closeUnlockModal()" class="mt-2 text-xs text-slate-400 hover:underline">取消返回</button></div></div>
+    
+    <div id="cardModal" class="hidden fixed inset-0 z-50 modal-overlay flex items-center justify-center p-4"><div class="bg-white rounded-2xl shadow-2xl w-full max-w-4xl h-[90vh] flex flex-col overflow-hidden"><div id="modalCover" class="h-40 w-full bg-slate-200 hidden bg-cover bg-center"></div><div id="modalBar" class="h-2 w-full"></div><div class="p-6 flex-1 overflow-y-auto"><div class="flex justify-between items-start mb-4"><div class="flex-1 px-1"><input id="editTitle" type="text" class="text-2xl font-black w-full border-none focus:ring-0 rounded p-1 mb-1" placeholder="任務標題"><p class="text-xs text-slate-400">位於列表：<span id="listTitleName" class="underline"></span></p></div><button onclick="closeModal()" class="text-slate-300 hover:text-slate-600 ml-4"><i class="fa-solid fa-circle-xmark text-2xl"></i></button></div><div class="grid grid-cols-1 md:grid-cols-4 gap-6"><div class="md:col-span-3 space-y-6"><div><div class="flex items-center gap-2 mb-2 text-slate-600"><i class="fa-solid fa-align-left text-sm"></i><label class="font-bold uppercase text-xs">描述與附件</label></div><div id="editor-container"></div></div><div id="checklistContainer"></div><div><div class="flex items-center gap-2 mb-2 text-slate-600"><i class="fa-solid fa-comments text-sm"></i><label class="font-bold uppercase text-xs">活動留言</label></div><div class="flex gap-3 mb-4"><div class="w-8 h-8 rounded bg-slate-100 flex items-center justify-center text-slate-500 font-bold text-xs">ME</div><div class="flex-1"><textarea id="newComment" rows="2" class="w-full border rounded-lg p-2 text-sm bg-white outline-none focus:ring-2 focus:ring-indigo-500" placeholder="撰寫評論..."></textarea><button onclick="addComment()" class="mt-1 bg-indigo-600 text-white px-3 py-1 rounded text-xs font-bold">儲存</button></div></div><div id="commentList" class="space-y-3"></div></div></div><div class="space-y-4"><div class="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-3"><div><label class="text-[10px] font-bold text-slate-400 uppercase block mb-1">負責人</label><select id="editOwner" class="w-full border rounded-lg px-2 py-1 text-sm"></select></div><div><label class="text-[10px] font-bold text-slate-400 uppercase block mb-1">標籤</label><select id="editLabel" class="w-full border rounded-lg px-2 py-1 text-sm font-bold text-indigo-600"></select></div><div><label class="text-[10px] font-bold text-slate-400 uppercase block mb-1">截止日期</label><input id="editDate" type="date" class="w-full border rounded-lg px-2 py-1 text-sm outline-none"></div></div><div class="space-y-2 px-1"><button onclick="saveCardChanges()" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-2 rounded-lg font-bold text-sm flex items-center justify-center gap-2 transition-all shadow-md"><i class="fa-solid fa-save"></i> 儲存變更</button><button onclick="deleteCurrentCard()" class="w-full bg-red-50 text-red-500 hover:bg-red-500 hover:text-white py-2 rounded-lg font-bold text-[11px] uppercase transition-all flex items-center justify-center gap-2"><i class="fa-solid fa-trash-can"></i> 刪除此張卡片</button></div><div><label class="text-[10px] font-bold text-slate-400 uppercase block mb-2 px-1">快速選色</label><div id="colorPicker" class="grid grid-cols-5 gap-2 px-1"></div></div></div></div></div></div></div>
+
+    <div id="calendarModal" class="hidden fixed inset-0 z-[70] modal-overlay flex items-center justify-center p-4"><div class="bg-white rounded-2xl shadow-2xl w-full max-w-5xl overflow-hidden"><div class="p-6 border-b flex justify-between items-center bg-slate-50"><h3 class="font-bold text-slate-700"><i class="fa-solid fa-calendar-check mr-2"></i>專案日期追蹤</h3><button onclick="toggleCalendarModal()" class="text-slate-400 hover:text-slate-600"><i class="fa-solid fa-xmark text-xl"></i></button></div><div class="p-6"><div id="calendar"></div></div></div></div>
+    <div id="settingModal" class="hidden fixed inset-0 z-[60] modal-overlay flex items-center justify-center p-4"><div class="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden"><div class="p-6 border-b flex justify-between items-center bg-slate-50"><h3 class="font-bold text-slate-700">看板偏好設定</h3><button onclick="document.getElementById('settingModal').classList.add('hidden')" class="text-slate-400 hover:text-slate-600"><i class="fa-solid fa-xmark"></i></button></div><div class="flex border-b text-sm font-bold text-slate-400"><button id="tab-data" onclick="switchTab('data')" class="tab-btn flex-1 py-3 active">資料管理</button><button id="tab-font" onclick="switchTab('font')" class="tab-btn flex-1 py-3">視覺樣式</button></div><div class="p-6 max-h-[60vh] overflow-y-auto"><div id="panel-data" class="space-y-6"><section class="bg-indigo-50 p-4 rounded-xl border border-indigo-100"><label class="text-[10px] font-bold text-indigo-500 uppercase mb-2 block">資料備份與轉移</label><div class="grid grid-cols-2 gap-3"><button onclick="exportData()" class="bg-white border border-indigo-200 text-indigo-600 py-2 rounded-lg text-sm font-bold hover:bg-indigo-600 hover:text-white transition-colors"><i class="fa-solid fa-download mr-1"></i> 匯出檔案</button><button onclick="document.getElementById('importFile').click()" class="bg-white border border-indigo-200 text-indigo-600 py-2 rounded-lg text-sm font-bold hover:bg-indigo-600 hover:text-white transition-colors"><i class="fa-solid fa-upload mr-1"></i> 匯入檔案</button><input type="file" id="importFile" class="hidden" accept=".json" onchange="importData(this)"></div></section><section><label class="text-[10px] font-bold text-slate-400 uppercase mb-2 block">負責人清單</label><div id="ownerSettings" class="space-y-2 mb-3"></div><div class="flex gap-2"><input id="newOwnerInput" type="text" class="flex-1 border rounded-lg px-3 py-2 text-sm" placeholder="新負責人姓名"><button onclick="addOption('owners')" class="bg-indigo-600 text-white px-3 rounded-lg text-sm">新增</button></div></section><section><label class="text-[10px] font-bold text-slate-400 uppercase mb-2 block">標籤清單</label><div id="labelSettings" class="space-y-2 mb-3"></div><div class="flex gap-2"><input id="newLabelInput" type="text" class="flex-1 border rounded-lg px-3 py-2 text-sm" placeholder="新標籤名稱"><button onclick="addOption('labels')" class="bg-indigo-600 text-white px-3 rounded-lg text-sm">新增</button></div></section></div><div id="panel-font" class="hidden space-y-6"><section><label class="text-[10px] font-bold text-slate-400 uppercase mb-2 block">看板標題字體 (px)</label><input id="input-list-font" type="number" onchange="updateFontSize('list', this.value)" class="w-full border rounded-lg px-3 py-2 text-sm"></section><section><label class="text-[10px] font-bold text-slate-400 uppercase mb-2 block">卡片內容字體 (px)</label><input id="input-card-font" type="number" onchange="updateFontSize('card', this.value)" class="w-full border rounded-lg px-3 py-2 text-sm"></section></div></div></div></div>
+
+    <script src="https://cdn.quilljs.com/1.3.6/quill.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.js"></script>
+    <script src="https://unpkg.com/@popperjs/core@2"></script>
+    <script src="https://unpkg.com/tippy.js@6"></script>
+    <script src="plugin.js"></script>
+    <script src="calendar-plugin.js"></script>
+    <script src="archive-plugin.js"></script>
+    <script src="feature-plugin.js"></script>
+
+    <script>
+        window.safeGetPluginConfig = function() { return (typeof getPluginConfig === 'function') ? getPluginConfig() : {listFontSize: 11, cardFontSize: 13, owners: ['未指定'], labels: ['待處理']}; };
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyB1CgICZRV1uSZsgohWw3EjwuxECaeYGRU",
+            authDomain: "project-adab1.firebaseapp.com",
+            projectId: "project-adab1",
+            storageBucket: "project-adab1.firebasestorage.app",
+            messagingSenderId: "359317748801",
+            appId: "1:359317748801:web:1faec8a66316d7f4fc9ac0",
+            measurementId: "G-21DR3Y5JP2"
+        };
+
+        let db;
+        let isFirebaseReady = false;
+
+        try {
+            if (firebaseConfig.apiKey) {
+                firebase.initializeApp(firebaseConfig);
+                db = firebase.firestore();
+                isFirebaseReady = true;
+                updateStatus('online');
+            } else { updateStatus('local'); }
+        } catch (e) { console.error("Firebase Init Error", e); updateStatus('error'); }
+
+        function updateStatus(status) {
+            const el = document.getElementById('sync-status');
+            if (status === 'online') { el.innerText = '● 雲端連線成功'; el.className = 'online'; }
+            else if (status === 'syncing') { el.innerText = '↻ 資料同步中...'; el.className = 'online'; }
+            else { el.innerText = '● 本地模式'; el.className = 'offline'; }
+        }
+
+        // ==========================================
+        //  多工作區 (Workspaces) 核心邏輯
+        // ==========================================
+        let workspaces = []; // 工作區列表
+        let currentWorkspaceId = null;
+        let currentBoardId = null;
+        let lists = []; // 當前看板資料
+        let currentEdit = null;
+        let quill = null;
+        let isAddingList = false;
+        let unsubscribe = null;
+        let addingToWsId = null; 
+        let editingBoardTarget = null; 
+
+        function initApp() {
+            document.getElementById('dashboardPage').style.display = 'flex';
+            document.getElementById('mainApp').style.display = 'none';
+
+            if (isFirebaseReady) {
+                db.collection("system").doc("workspaces_v2").onSnapshot((doc) => {
+                    if (doc.exists) {
+                        workspaces = doc.data().list || [];
+                    } else {
+                        migrateOldData();
+                    }
+                    renderDashboard();
+                    renderSidebar();
+                    if (currentWorkspaceId) enterWorkspace(currentWorkspaceId);
+                });
+            } else {
+                const localWS = localStorage.getItem('trello_workspaces');
+                workspaces = localWS ? JSON.parse(localWS) : [{ id: 'ws_local', title: '我的工作區', boards: [] }];
+                renderDashboard();
+                renderSidebar();
+            }
+        }
+
+        function migrateOldData() {
+            db.collection("system").doc("board_directory").get().then(doc => {
+                const oldBoards = doc.exists ? (doc.data().boards || []) : [];
+                workspaces = [{ id: 'ws_main', title: '主工作區', boards: oldBoards }];
+                saveWorkspaces();
+            });
+        }
+
+        function saveWorkspaces() {
+            if (isFirebaseReady) {
+                db.collection("system").doc("workspaces_v2").set({ list: workspaces }, { merge: true });
+            } else {
+                localStorage.setItem('trello_workspaces', JSON.stringify(workspaces));
+            }
+        }
+
+        // --- 側邊欄與大廳 ---
+        function renderSidebar() {
+            const listEl = document.getElementById('workspaceList');
+            if (!listEl) return;
+            listEl.innerHTML = workspaces.map(ws => `
+                <div class="sidebar-item ${currentWorkspaceId === ws.id ? 'active' : ''}" onclick="enterWorkspace('${ws.id}')">
+                    <div class="flex items-center gap-2 overflow-hidden flex-1"><div class="w-2 h-2 rounded-full bg-slate-400"></div><span class="truncate">${ws.title}</span></div>
+                    <div class="sidebar-actions"><button onclick="editWorkspaceName(event, '${ws.id}')" class="sidebar-btn"><i class="fa-solid fa-pen"></i></button><button onclick="deleteWorkspace(event, '${ws.id}')" class="sidebar-btn del"><i class="fa-solid fa-trash"></i></button></div>
+                </div>
+            `).join('');
+        }
+
+        function toggleSidebar() {
+            const sidebar = document.getElementById('sidebar');
+            const mainContent = document.getElementById('mainContent');
+            sidebar.classList.toggle('collapsed');
+            if (sidebar.classList.contains('collapsed')) {
+                mainContent.style.marginLeft = '0'; mainContent.style.width = '100%';
+            } else {
+                mainContent.style.marginLeft = '260px'; mainContent.style.width = 'calc(100% - 260px)';
+            }
+        }
+
+        function renderDashboard() {
+            const container = document.getElementById('allWorkspacesContainer');
+            if (!container) return;
+            
+            container.innerHTML = workspaces.map(ws => `
+                <div class="workspace-section">
+                    <div class="flex items-center gap-3 mb-4 pb-2 border-b border-slate-200">
+                        <div class="w-8 h-8 rounded bg-gradient-to-br from-indigo-500 to-purple-500 text-white flex items-center justify-center font-bold text-lg">${ws.title.charAt(0)}</div>
+                        <h2 class="text-lg font-bold text-slate-700 flex-1">${ws.title}</h2>
+                        <div class="flex gap-2"><button onclick="editWorkspaceName('${ws.id}')" class="text-slate-400 hover:text-indigo-600 p-2 rounded hover:bg-slate-100 text-sm flex items-center gap-1"><i class="fa-solid fa-pen"></i> 編輯</button><button onclick="deleteWorkspace('${ws.id}')" class="text-slate-400 hover:text-red-500 p-2 rounded hover:bg-slate-100 text-sm flex items-center gap-1"><i class="fa-solid fa-trash"></i> 刪除</button></div>
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
+                        ${ws.boards.map(board => `
+                            <div class="board-tile ${board.color || 'bg-blue-500'} rounded-lg text-white p-4 relative group" onclick="checkAndEnterBoard('${board.id}', '${ws.id}')">
+                                <div class="font-bold text-lg shadow-black drop-shadow-md">${board.title}</div>
+                                ${board.locked ? '<div class="absolute top-2 left-2 text-white/80"><i class="fa-solid fa-lock"></i></div>' : ''}
+                                <div class="board-actions" onclick="event.stopPropagation()">
+                                    <div onclick="openEditBoardModal('${ws.id}', '${board.id}')" class="action-btn" title="編輯看板"><i class="fa-solid fa-pen"></i></div>
+                                    <div onclick="deleteBoardInDashboard('${ws.id}', '${board.id}')" class="action-btn delete" title="刪除看板"><i class="fa-solid fa-trash"></i></div>
+                                </div>
+                                <div class="board-tile-overlay absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none"></div>
+                            </div>
+                        `).join('')}
+                        <div onclick="openCreateBoardModal('${ws.id}')" class="board-tile bg-slate-200 rounded-lg flex items-center justify-center hover:bg-slate-300 text-slate-500 border-2 border-dashed border-slate-300 transition-colors"><div class="text-center"><p class="text-sm font-bold"><i class="fa-solid fa-plus mr-1"></i> 建立新看板</p></div></div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        // --- 工作區 CRUD ---
+        function openCreateWorkspaceModal() { document.getElementById('newWorkspaceName').value = ''; document.getElementById('createWorkspaceModal').classList.remove('hidden'); }
+        function createNewWorkspace() {
+            const name = document.getElementById('newWorkspaceName').value.trim();
+            if(!name) return;
+            workspaces.push({ id: 'ws_' + Date.now(), title: name, boards: [] });
+            saveWorkspaces(); document.getElementById('createWorkspaceModal').classList.add('hidden'); renderDashboard(); renderSidebar();
+        }
+        function editWorkspaceName(e, wsId) {
+            if(e && e.stopPropagation) e.stopPropagation();
+            if(typeof e === 'string') wsId = e; // handle both call types
+            const ws = workspaces.find(w => w.id === wsId);
+            const newName = prompt("重新命名工作區:", ws.title);
+            if (newName && newName.trim()) { ws.title = newName.trim(); saveWorkspaces(); renderDashboard(); renderSidebar(); }
+        }
+        function deleteWorkspace(e, wsId) {
+            if(e && e.stopPropagation) e.stopPropagation();
+            if(typeof e === 'string') wsId = e;
+            if (!confirm("確定刪除此工作區？看板連結將消失！")) return;
+            workspaces = workspaces.filter(w => w.id !== wsId);
+            saveWorkspaces(); renderDashboard(); renderSidebar();
+            if (currentWorkspaceId === wsId) backToDashboard();
+        }
+
+        // --- 看板 CRUD ---
+        function openCreateBoardModal(wsId) {
+            addingToWsId = wsId;
+            const ws = workspaces.find(w => w.id === wsId);
+            document.getElementById('targetWsName').innerText = ws.title;
+            document.getElementById('newBoardName').value = '';
+            document.getElementById('newBoardPass').value = '';
+            document.getElementById('createBoardModal').classList.remove('hidden');
+        }
+        function createNewBoard() {
+            const title = document.getElementById('newBoardName').value.trim();
+            const pass = document.getElementById('newBoardPass').value.trim();
+            if (!title) return alert("請輸入名稱");
+            const newId = 'board_' + Date.now();
+            const colors = ['bg-blue-500', 'bg-green-500', 'bg-orange-500', 'bg-red-500', 'bg-purple-500', 'bg-pink-500', 'bg-indigo-500', 'bg-teal-500'];
+            const randomColor = colors[Math.floor(Math.random() * colors.length)];
+            const ws = workspaces.find(w => w.id === addingToWsId);
+            ws.boards.push({ id: newId, title: title, color: randomColor, locked: !!pass, password: pass });
+            saveWorkspaces();
+            lists = [{ id: 'l1', title: '待處理', cards: [] }];
+            if (isFirebaseReady) { db.collection("boards").doc(newId).set({ lists: lists, updatedAt: new Date().toISOString() }); } 
+            else { localStorage.setItem('trello_' + newId, JSON.stringify(lists)); }
+            document.getElementById('createBoardModal').classList.add('hidden');
+            checkAndEnterBoard(newId, addingToWsId);
+        }
+        function openEditBoardModal(wsId, boardId) {
+            const ws = workspaces.find(w => w.id === wsId);
+            const board = ws.boards.find(b => b.id === boardId);
+            editingBoardTarget = { wsId, boardId };
+            document.getElementById('editBoardNameInput').value = board.title;
+            document.getElementById('editBoardPassInput').value = board.password || ''; 
+            document.getElementById('editBoardModal').classList.remove('hidden');
+        }
+        function confirmEditBoard() {
+            if (!editingBoardTarget) return;
+            const ws = workspaces.find(w => w.id === editingBoardTarget.wsId);
+            const board = ws.boards.find(b => b.id === editingBoardTarget.boardId);
+            const newName = document.getElementById('editBoardNameInput').value.trim();
+            const newPass = document.getElementById('editBoardPassInput').value.trim();
+            if (!newName) return alert("名稱不能為空");
+            board.title = newName; board.password = newPass; board.locked = !!newPass;
+            saveWorkspaces(); renderDashboard();
+            document.getElementById('editBoardModal').classList.add('hidden');
+            editingBoardTarget = null;
+        }
+        function deleteBoardInDashboard(wsId, boardId) {
+            if (!confirm("確定要刪除此看板嗎？")) return;
+            const ws = workspaces.find(w => w.id === wsId);
+            ws.boards = ws.boards.filter(b => b.id !== boardId);
+            saveWorkspaces(); renderDashboard();
+        }
+
+        // --- 進入看板 ---
+        function checkAndEnterBoard(boardId, wsId) {
+            currentWorkspaceId = wsId;
+            const ws = workspaces.find(w => w.id === wsId);
+            const board = ws.boards.find(b => b.id === boardId);
+            if (!board) return;
+            if (board.locked) {
+                pendingBoardId = boardId;
+                document.getElementById('unlockPass').value = '';
+                document.getElementById('unlockBoardModal').classList.remove('hidden');
+            } else { enterBoard(boardId); }
+        }
+        let pendingBoardId = null;
+        window.attemptUnlock = function() {
+            const pass = document.getElementById('unlockPass').value;
+            const ws = workspaces.find(w => w.id === currentWorkspaceId);
+            const board = ws.boards.find(b => b.id === pendingBoardId);
+            if (pass === board.password) { closeUnlockModal(); enterBoard(pendingBoardId); } else { alert("密碼錯誤！"); }
+        };
+        window.closeUnlockModal = function() { document.getElementById('unlockBoardModal').classList.add('hidden'); }
+        function enterBoard(boardId) {
+            currentBoardId = boardId;
+            const ws = workspaces.find(w => w.id === currentWorkspaceId);
+            const board = ws.boards.find(b => b.id === boardId);
+            document.getElementById('appTitle').innerText = board.title;
+            document.getElementById('appBreadcrumb').innerText = `${ws.title} > ${board.title}`;
+            document.getElementById('dashboardPage').style.display = 'none';
+            document.getElementById('mainApp').style.display = 'flex';
+            loadBoardData(boardId);
+            if (typeof initSearchUI === 'function') setTimeout(initSearchUI, 500); 
+            if (typeof initDarkMode === 'function') setTimeout(initDarkMode, 500);
+        }
+        function enterWorkspace(wsId) {
+            currentWorkspaceId = wsId;
+            backToDashboard(); // 切回大廳
+            renderDashboard(); // 重新渲染大廳以顯示對應工作區 (如果需要過濾顯示的話，但目前設計是顯示所有)
+            renderSidebar(); // 更新 active
+        }
+        function backToDashboard() {
+            if (unsubscribe) unsubscribe();
+            currentBoardId = null;
+            document.getElementById('mainApp').style.display = 'none';
+            document.getElementById('dashboardPage').style.display = 'flex';
+        }
+
+        // --- 資料讀寫 (板內資料) ---
+        function loadBoardData(boardId) {
+            const local = localStorage.getItem('trello_' + boardId);
+            if (local) { lists = JSON.parse(local); renderBoard(); } else { lists = []; renderBoard(); }
+            if (isFirebaseReady) {
+                if (unsubscribe) unsubscribe();
+                unsubscribe = db.collection("boards").doc(boardId).onSnapshot((doc) => {
+                    if (doc.exists) {
+                        const cloudData = doc.data(); lists = cloudData.lists || [];
+                        localStorage.setItem('trello_' + boardId, JSON.stringify(lists));
+                        if (cloudData.plugin_config) localStorage.setItem('plugin_config', JSON.stringify(cloudData.plugin_config));
+                        if (cloudData.trello_archives) localStorage.setItem('trello_archives', JSON.stringify(cloudData.trello_archives));
+                        renderBoard(); updateStatus('online');
+                    } else { saveAll(); }
+                }, () => updateStatus('error'));
+            }
+        }
+        window.saveAll = function() {
+            if (!currentBoardId) return;
+            localStorage.setItem('trello_' + currentBoardId, JSON.stringify(lists));
+            renderBoard();
+            if (isFirebaseReady) {
+                updateStatus('syncing');
+                db.collection("boards").doc(currentBoardId).set({
+                    lists: lists, updatedAt: new Date().toISOString(),
+                    plugin_config: JSON.parse(localStorage.getItem('plugin_config')) || {},
+                    trello_archives: JSON.parse(localStorage.getItem('trello_archives')) || []
+                }, { merge: true }).then(() => setTimeout(() => updateStatus('online'), 500));
+            }
+        };
+
+        // --- 拖曳滾動 ---
+        const wrapper = document.getElementById('board-wrapper');
+        let isDown = false, startX, scrollLeft;
+        wrapper.addEventListener('wheel', (e) => {
+            const scrollableList = e.target.closest('.card-list');
+            if (scrollableList && scrollableList.scrollHeight > scrollableList.clientHeight) return;
+            if (e.deltaY !== 0) { e.preventDefault(); wrapper.scrollLeft += e.deltaY; }
+        });
+        wrapper.addEventListener('mousedown', (e) => {
+            if (e.target.closest('.list-container') || e.target.closest('.card-item') || e.target.closest('.add-list-form') || ['BUTTON', 'INPUT', 'TEXTAREA', 'SELECT'].includes(e.target.tagName)) return;
+            isDown = true; wrapper.classList.add('active'); startX = e.pageX - wrapper.offsetLeft; scrollLeft = wrapper.scrollLeft;
+        });
+        wrapper.addEventListener('mouseleave', () => { isDown = false; wrapper.classList.remove('active'); });
+        wrapper.addEventListener('mouseup', () => { isDown = false; wrapper.classList.remove('active'); });
+        wrapper.addEventListener('mousemove', (e) => { if (!isDown) return; e.preventDefault(); const x = e.pageX - wrapper.offsetLeft; wrapper.scrollLeft = scrollLeft - (x - startX) * 2; });
+
+        // --- 渲染看板 ---
+        function renderBoard() {
+            const board = document.getElementById('board');
+            if (!board) return; board.innerHTML = '';
+            const config = window.safeGetPluginConfig();
+            lists.forEach(list => {
+                const el = document.createElement('div');
+                el.className = "list-container bg-slate-200/50 rounded-2xl w-80 p-4 flex-shrink-0 flex flex-col border shadow-inner";
+                el.draggable = true; el.dataset.listId = list.id;
+                el.ondragstart = (e) => { if (!document.body.classList.contains('editing-title') && e.target.classList.contains('list-container')) { draggedListId = list.id; e.target.classList.add('list-dragging'); } };
+                el.ondragend = (e) => { e.target.classList.remove('list-dragging'); document.querySelectorAll('.list-placeholder, .drag-placeholder').forEach(p => p.remove()); };
+                el.ondragover = (e) => handleCardDragOver(e, list.id); el.ondrop = (e) => dropCard(e, list.id);
+                el.innerHTML = `
+                    <div class="flex justify-between items-center mb-4 px-1 cursor-move"><h2 onclick="enableListEdit(this, '${list.id}')" class="font-black text-slate-500 uppercase hover:text-indigo-600 transition-colors cursor-pointer w-full" style="font-size: ${config.listFontSize}px">${list.title}</h2><button onclick="deleteList('${list.id}')" class="text-slate-300 hover:text-red-400 ml-2"><i class="fa-solid fa-trash-can text-xs"></i></button></div>
+                    <div class="card-list space-y-4 overflow-y-auto flex-1 pr-1">${list.cards.map(card => `
+                        <div onclick="openModal('${list.id}', '${card.id}')" draggable="true" ondragstart="startCardDrag(event, '${card.id}', '${list.id}')" class="card-item bg-white rounded-xl shadow-sm border border-slate-100 cursor-pointer hover:shadow-xl transition-all overflow-hidden relative ${card.done ? 'card-done' : ''}">
+                            <div class="card-color-bar flex items-center justify-end px-2 gap-2 overflow-hidden" style="background-color: ${card.color}" onclick="event.stopPropagation()">
+                                <div class="toolbar-btns h-full items-center gap-2">
+                                    <button title="複製" onclick="event.stopPropagation(); copyCard('${list.id}', '${card.id}')" class="text-white hover:bg-white/20 p-1 rounded w-7 h-7 flex items-center justify-center transition-colors"><i class="fa-solid fa-copy text-xs"></i></button>
+                                    <button title="封存" onclick="event.stopPropagation(); window.archiveCard('${list.id}', '${card.id}')" class="text-white hover:bg-white/20 p-1 rounded w-7 h-7 flex items-center justify-center transition-colors"><i class="fa-solid fa-box-archive text-xs"></i></button>
+                                    <button title="刪除" onclick="event.stopPropagation(); deleteCardDirect('${list.id}', '${card.id}')" class="text-white hover:bg-white/20 p-1 rounded w-7 h-7 flex items-center justify-center transition-colors"><i class="fa-solid fa-trash-can text-xs"></i></button>
+                                </div>
+                            </div>
+                            <div class="absolute top-4 right-2 z-20 p-2 check-btn" onclick="event.stopPropagation(); toggleCardDone('${list.id}', '${card.id}')"><i class="fa-regular fa-circle text-slate-300 text-xl hover:text-green-500 transition-colors ${card.done ? 'hidden' : ''}"></i><i class="fa-solid fa-circle-check text-green-500 text-xl shadow-sm bg-white rounded-full ${card.done ? '' : 'hidden'}"></i></div>
+                            <div class="p-4 pt-2">
+                                <span class="bg-indigo-50 text-indigo-500 text-[9px] font-black px-2 py-0.5 rounded border mb-2 inline-block">${card.label}</span>
+                                <p class="text-slate-700 font-bold mb-4 leading-tight" style="font-size: ${config.cardFontSize}px">${card.text}</p>
+                                <div class="flex items-center justify-between text-[10px] text-slate-400 font-bold"><span class="${window.getDueDateStyle ? window.getDueDateStyle(card.date, card.done) : ''} px-2 py-0.5 rounded-full flex items-center gap-1 border transition-colors"><i class="fa-regular fa-clock"></i> ${card.date || '無日期'}</span><div class="flex items-center gap-2"><span>@${card.owner}</span></div></div>
+                            </div>
+                        </div>`).join('')}</div>
+                    <button onclick="addNewCard('${list.id}')" class="mt-4 text-slate-400 font-bold py-2 border-2 border-dashed border-slate-300 rounded-xl hover:bg-white text-[11px]">+ 新增卡片</button>`;
+                board.appendChild(el);
+            });
+            const addListDiv = document.createElement('div'); addListDiv.className = "add-list-wrapper";
+            if (!isAddingList) { addListDiv.innerHTML = `<button onclick="showAddListForm()" class="w-full text-left text-slate-500 font-bold hover:text-slate-700 flex items-center gap-2"><i class="fa-solid fa-plus"></i> 新增其他列表</button>`; } 
+            else { addListDiv.innerHTML = `<div class="add-list-form"><input type="text" id="newListTitle" class="w-full border border-indigo-500 rounded p-2 mb-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-300" placeholder="輸入列表標題..." autofocus><div class="flex items-center gap-2"><button onclick="confirmAddList()" class="bg-indigo-600 text-white px-4 py-1.5 rounded text-sm font-bold hover:bg-indigo-700">新增列表</button><button onclick="hideAddListForm()" class="text-slate-500 hover:text-slate-800"><i class="fa-solid fa-xmark text-lg"></i></button></div></div>`; }
+            board.appendChild(addListDiv); if(isAddingList) setTimeout(() => document.getElementById('newListTitle')?.focus(), 0);
+        }
+
+        // --- Global Helpers ---
+        window.copyCard = function(lid, cid) { const list = lists.find(l => l.id === lid); const card = list.cards.find(c => c.id === cid); if(!card) return; const newCard = JSON.parse(JSON.stringify(card)); newCard.id = 'c' + Date.now(); newCard.text = newCard.text + ' (副本)'; const idx = list.cards.findIndex(c => c.id === cid); list.cards.splice(idx + 1, 0, newCard); saveAll(); };
+        window.deleteCardDirect = function(lid, cid) { if(!confirm('確定要刪除此卡片嗎？此操作無法還原。')) return; const list = lists.find(l => l.id === lid); list.cards = list.cards.filter(c => c.id !== cid); saveAll(); };
+        window.toggleCardDone = function(lid, cid) { const list = lists.find(l => l.id === lid); const card = list.cards.find(c => c.id === cid); if (card) { card.done = !card.done; saveAll(); } };
+        function exportData() { const data = { lists: lists, archives: JSON.parse(localStorage.getItem('trello_archives')), config: window.safeGetPluginConfig() }; const blob = new Blob([JSON.stringify(data, null, 2)], {type: "application/json"}); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `看板備份_${new Date().toISOString().slice(0,10)}.json`; a.click(); }
+        function importData(input) { const file = input.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = (e) => { try { const data = JSON.parse(e.target.result); if (data.lists) lists = data.lists; if (data.archives) localStorage.setItem('trello_archives', JSON.stringify(data.archives)); if (data.config) localStorage.setItem('plugin_config', JSON.stringify(data.config)); saveAll(); alert("匯入成功！"); location.reload(); } catch (err) { alert("格式錯誤"); } }; reader.readAsText(file); }
+        function initQuill() { if (quill) return; quill = new Quill('#editor-container', { theme: 'snow', placeholder: '輸入詳細描述...', modules: { toolbar: [ [{ 'header': [1, 2, 3, false] }], ['bold', 'italic', 'underline', 'strike'], [{ 'color': [] }, { 'background': [] }], [{ 'list': 'ordered'}, { 'list': 'bullet' }], ['image', 'link'], ['clean'] ] } }); }
+        function showAddListForm() { isAddingList = true; renderBoard(); }
+        function hideAddListForm() { isAddingList = false; renderBoard(); }
+        function confirmAddList() { const title = document.getElementById('newListTitle').value.trim(); if (title) { lists.push({id: 'l' + Date.now(), title: title, cards: []}); saveAll(); isAddingList = false; } }
+        document.addEventListener('keydown', function(e) { if (isAddingList && e.key === 'Enter' && document.activeElement.id === 'newListTitle') confirmAddList(); });
+        function enableListEdit(element, listId) { const currentTitle = element.innerText; const input = document.createElement('input'); input.type = 'text'; input.value = currentTitle; input.className = "font-black text-slate-700 uppercase w-full bg-white border border-indigo-500 rounded px-1 py-0.5 outline-none"; input.style.fontSize = (window.safeGetPluginConfig().listFontSize) + 'px'; document.body.classList.add('editing-title'); element.replaceWith(input); input.focus(); input.select(); const save = () => { const newTitle = input.value.trim(); if (newTitle) { const list = lists.find(l => l.id === listId); if (list) list.title = newTitle; saveAll(); } else { renderBoard(); } document.body.classList.remove('editing-title'); }; input.addEventListener('blur', save); input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); }); }
+        function openModal(lid, cid) { const list = lists.find(l => l.id === lid); const card = list.cards.find(c => c.id === cid); if(!card) return; currentEdit = { lid, cid, color: card.color }; initQuill(); document.getElementById('listTitleName').innerText = list.title; document.getElementById('editTitle').value = card.text; quill.root.innerHTML = card.desc || ''; document.getElementById('editDate').value = card.date; document.getElementById('modalBar').style.backgroundColor = card.color; const cfg = window.safeGetPluginConfig(); document.getElementById('editOwner').innerHTML = cfg.owners.map(o => `<option value="${o}" ${card.owner === o ? 'selected' : ''}>${o}</option>`).join(''); document.getElementById('editLabel').innerHTML = cfg.labels.map(l => `<option value="${l}" ${card.label === l ? 'selected' : ''}>${l}</option>`).join(''); const cols = ['#facc15', '#f87171', '#fb923c', '#4ade80', '#2dd4bf', '#38bdf8', '#818cf8', '#c084fc', '#f472b6', '#94a3b8']; document.getElementById('colorPicker').innerHTML = cols.map(c => `<div class="color-dot ${c === card.color ? 'active' : ''}" style="background-color: ${c}" onclick="setModalColor('${c}', event)"></div>`).join(''); renderComments(card.comments || []); if (window.renderChecklistUI) window.renderChecklistUI(lid, cid); document.getElementById('cardModal').classList.remove('hidden'); }
+        function saveCardChanges() { const card = lists.find(l => l.id === currentEdit.lid).cards.find(c => c.id === currentEdit.cid); card.text = document.getElementById('editTitle').value; card.desc = quill.root.innerHTML; card.owner = document.getElementById('editOwner').value; card.label = document.getElementById('editLabel').value; card.date = document.getElementById('editDate').value; card.color = currentEdit.color; saveAll(); closeModal(); }
+        function deleteCurrentCard() { if(confirm("確定要刪除這張卡片嗎？")) { const list = lists.find(l => l.id === currentEdit.lid); list.cards = list.cards.filter(c => c.id !== currentEdit.cid); saveAll(); closeModal(); } }
+        function addComment() { const input = document.getElementById('newComment'); if (!input.value.trim()) return; const card = lists.find(l => l.id === currentEdit.lid).cards.find(c => c.id === currentEdit.cid); if (!card.comments) card.comments = []; card.comments.unshift({ id: Date.now(), text: input.value, date: new Date().toLocaleString() }); input.value = ''; renderComments(card.comments); saveAll(); }
+        function renderComments(comments) { const list = document.getElementById('commentList'); list.innerHTML = comments.map(c => `<div class="bg-slate-50 p-2 rounded border text-xs"><div class="font-bold mb-1">User <span class="font-normal text-slate-400 text-[9px]">${c.date}</span></div>${c.text}</div>`).join(''); }
+        function closeModal() { document.getElementById('cardModal').classList.add('hidden'); }
+        function addNewCard(lid) { const today = new Date().toISOString().split('T')[0]; const cfg = window.safeGetPluginConfig(); lists.find(l => l.id === lid).cards.push({ id: 'c'+Date.now(), text: '新任務', date: today, color: '#facc15', label: cfg.labels[0], owner: cfg.owners[0], done: false }); saveAll(); }
+        function openSettingsPortal() { if(typeof initPluginUI === 'function') initPluginUI(); document.getElementById('settingModal').classList.remove('hidden'); }
+        function addList() { showAddListForm(); }
+        function deleteList(id) { if(confirm("確定刪除？")){lists = lists.filter(l=>l.id!==id); saveAll();} }
+        function setModalColor(c, e) { currentEdit.color = c; document.getElementById('modalBar').style.backgroundColor = c; document.querySelectorAll('.color-dot').forEach(d => d.classList.remove('active')); e.target.classList.add('active'); }
+        let draggedListId = null;
+        function handleBoardDragOver(e) { if (draggedListId === null) return; e.preventDefault(); const board = document.getElementById('board'); const after = getDragAfterList(board, e.clientX); let ph = document.querySelector('.list-placeholder') || document.createElement('div'); ph.className = 'list-placeholder'; if (after == null) { board.insertBefore(ph, board.lastElementChild); } else { board.insertBefore(ph, after); } }
+        function getDragAfterList(container, x) { const drs = [...container.querySelectorAll('.list-container:not(.list-dragging)')]; return drs.reduce((c, child) => { const box = child.getBoundingClientRect(); const offset = x - box.left - box.width / 2; if (offset < 0 && offset > c.offset) return { offset, element: child }; else return c; }, { offset: Number.NEGATIVE_INFINITY }).element; }
+        document.getElementById('board').ondrop = (e) => { if (draggedListId === null) return; const ph = document.querySelector('.list-placeholder'); if (!ph) return; const ni = Array.from(document.getElementById('board').children).indexOf(ph); const oi = lists.findIndex(l => l.id === draggedListId); const [item] = lists.splice(oi, 1); lists.splice(ni > oi ? ni - 1 : ni, 0, item); draggedListId = null; saveAll(); };
+        function startCardDrag(e, cid, lid) { e.stopPropagation(); draggedCard = { cid, lid }; e.target.classList.add('dragging'); }
+        function handleCardDragOver(e, lid) { if (draggedCard === null) return; e.preventDefault(); e.stopPropagation(); const cl = e.currentTarget.querySelector('.card-list'); const after = getDragAfterCard(cl, e.clientY); let ph = document.querySelector('.drag-placeholder') || document.createElement('div'); ph.className = 'drag-placeholder'; ph.style.height = '100px'; if (after == null) cl.appendChild(ph); else cl.insertBefore(ph, after); }
+        function getDragAfterCard(container, y) { const drs = [...container.querySelectorAll('.card-item:not(.dragging)')]; return drs.reduce((c, child) => { const box = child.getBoundingClientRect(); const offset = y - box.top - box.height / 2; if (offset < 0 && offset > c.offset) return { offset, element: child }; else return c; }, { offset: Number.NEGATIVE_INFINITY }).element; }
+        function dropCard(e, lid) { if (draggedCard === null) return; e.preventDefault(); e.stopPropagation(); const fl = lists.find(l => l.id === draggedCard.lid), tl = lists.find(l => l.id === lid); const idx = fl.cards.findIndex(c => c.id === draggedCard.cid); const [item] = fl.cards.splice(idx, 1); const ph = e.currentTarget.querySelector('.drag-placeholder'); const pi = ph ? Array.from(e.currentTarget.querySelector('.card-list').children).indexOf(ph) : -1; if (pi === -1) tl.cards.push(item); else tl.cards.splice(pi, 0, item); draggedCard = null; saveAll(); }
+
+        window.onload = () => { initApp(); };
+    </script>
+</body>
+</html>
